@@ -9,14 +9,11 @@ from sklearn.linear_model import LinearRegression
 # A simple decorator to protect routes
 from functools import wraps
 
-
-def normalize_symbol(symbol):
-    if not symbol.upper().endswith('.NS'):
-        return symbol.upper() + ".NS"
-    return symbol.upper()
-
 def predict_stock(symbol):
-    ticker_symbol = normalize_symbol(symbol)
+    if not symbol.upper().endswith('.NS'):
+        ticker_symbol = symbol + ".NS"
+    else:
+        ticker_symbol = symbol
 
     try:
         data = yf.download(
@@ -73,7 +70,10 @@ def predict_stock(symbol):
 
 
 def get_live_price(symbol):
-    ticker_symbol = normalize_symbol(symbol)
+    if not symbol.upper().endswith('.NS'):
+        ticker_symbol = symbol + ".NS"
+    else:
+        ticker_symbol = symbol
 
     try:
         ticker = yf.Ticker(ticker_symbol)
@@ -99,49 +99,6 @@ def get_live_price(symbol):
         pass
 
     return 0.0
-
-
-def fetch_latest_prices(symbols):
-    tickers = [normalize_symbol(symbol) for symbol in symbols]
-    prices = {symbol: 0.0 for symbol in tickers}
-
-    if not tickers:
-        return prices
-
-    try:
-        downloaded = yf.download(
-            tickers=tickers,
-            period="5d",
-            interval="1d",
-            auto_adjust=False,
-            progress=False,
-            threads=False,
-            group_by="ticker"
-        )
-
-        if downloaded is not None and not downloaded.empty:
-            if len(tickers) == 1:
-                close = downloaded.get("Close")
-                if close is not None:
-                    close = pd.to_numeric(close, errors="coerce").dropna()
-                    if not close.empty:
-                        prices[tickers[0]] = float(close.iloc[-1])
-            else:
-                for ticker in tickers:
-                    if ticker in downloaded.columns.get_level_values(0):
-                        close = downloaded[ticker].get("Close")
-                        if close is not None:
-                            close = pd.to_numeric(close, errors="coerce").dropna()
-                            if not close.empty:
-                                prices[ticker] = float(close.iloc[-1])
-    except Exception:
-        pass
-
-    for ticker in tickers:
-        if prices[ticker] == 0.0:
-            prices[ticker] = get_live_price(ticker)
-
-    return prices
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -191,10 +148,9 @@ def home():
     risk_score_map = {"Low": 1, "Medium": 2, "High": 3}
     weighted_risk_sum = 0.0
     weighted_risk_total = 0.0
-    price_map = fetch_latest_prices([stock.symbol for stock in stocks])
     for stock in stocks:
         symbol = stock.symbol
-        price = price_map.get(normalize_symbol(symbol), 0.0)
+        price = get_live_price(symbol)
         prediction, risk = predict_stock(stock.symbol)
         total = round(price * stock.shares, 2)
         total_portfolio_value += total
@@ -230,10 +186,9 @@ def get_live_prices():
     stocks = Portfolio.query.filter_by(user_id=user_id).all()
     stock_data = []
     total_portfolio_value = 0.0
-    price_map = fetch_latest_prices([stock.symbol for stock in stocks])
 
     for stock in stocks:
-        price = price_map.get(normalize_symbol(stock.symbol), 0.0)
+        price = get_live_price(stock.symbol)
         total = round(price * stock.shares, 2)
         total_portfolio_value += total
         stock_data.append({
