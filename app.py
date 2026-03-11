@@ -68,38 +68,6 @@ def predict_stock(symbol):
         return 0, "Unknown"
 
 
-def get_live_price(symbol):
-    if not symbol.upper().endswith('.NS'):
-        ticker_symbol = symbol + ".NS"
-    else:
-        ticker_symbol = symbol
-
-    try:
-        ticker = yf.Ticker(ticker_symbol)
-
-        try:
-            fast_info = ticker.fast_info
-            if fast_info:
-                price = fast_info.get("lastPrice") or fast_info.get("regularMarketPrice")
-                if price is not None:
-                    return float(price)
-        except Exception:
-            pass
-
-        history = ticker.history(period="1d")
-        if history is None or history.empty:
-            history = ticker.history(period="5d")
-
-        if history is not None and not history.empty:
-            close = history["Close"].dropna()
-            if not close.empty:
-                return float(close.iloc[-1])
-    except Exception:
-        pass
-
-    return 0.0
-
-
 app = Flask(__name__)
 app.secret_key = 'your_secret_key_here'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
@@ -139,7 +107,17 @@ def home():
     weighted_risk_total = 0.0
     for stock in stocks:
         symbol = stock.symbol
-        price = get_live_price(symbol)
+        if not symbol.upper().endswith('.NS'):
+            ticker_symbol = symbol + ".NS"
+        else:
+            ticker_symbol = symbol
+        
+        try:
+            yf_data = yf.Ticker(ticker_symbol)
+            price = yf_data.info.get("regularMarketPrice", 0)
+            if price is None: price = 0
+        except Exception:
+            price = 0
         prediction, risk = predict_stock(stock.symbol)
         total = round(price * stock.shares, 2)
         total_portfolio_value += total
@@ -170,27 +148,38 @@ def home():
 # --- NEW ROUTE TO GET LIVE PRICES ---
 @app.route('/get_live_prices')
 @login_required
-def get_live_prices():
-    user_id = session['user_id']
-    stocks = Portfolio.query.filter_by(user_id=user_id).all()
-    stock_data = []
-    total_portfolio_value = 0.0
+def get_live_price(symbol):
+    if not symbol.upper().endswith('.NS'):
+        ticker_symbol = symbol + ".NS"
+    else:
+        ticker_symbol = symbol
 
-    for stock in stocks:
-        price = get_live_price(stock.symbol)
-        total = round(price * stock.shares, 2)
-        total_portfolio_value += total
-        stock_data.append({
-            'id': stock.id,
-            'symbol': stock.symbol.upper(),
-            'price': price,
-            'total': total,
-        })
+    try:
+        ticker = yf.Ticker(ticker_symbol)
 
-    return jsonify({
-        'stocks': stock_data,
-        'total_portfolio_value': round(total_portfolio_value, 2),
-    })
+        # try fast_info first
+        try:
+            fast_info = ticker.fast_info
+            if fast_info:
+                price = fast_info.get("lastPrice") or fast_info.get("regularMarketPrice")
+                if price is not None:
+                    return float(price)
+        except:
+            pass
+
+        # safer fallback
+        history = ticker.history(period="1d")
+
+        if history is None or history.empty:
+            history = ticker.history(period="5d")
+
+        if not history.empty:
+            return float(history["Close"].iloc[-1])
+
+    except:
+        pass
+
+    return 0.0
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
