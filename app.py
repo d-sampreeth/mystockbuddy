@@ -148,38 +148,39 @@ def home():
 # --- NEW ROUTE TO GET LIVE PRICES ---
 @app.route('/get_live_prices')
 @login_required
-def get_live_price(symbol):
-    if not symbol.upper().endswith('.NS'):
-        ticker_symbol = symbol + ".NS"
-    else:
-        ticker_symbol = symbol
-
-    try:
-        ticker = yf.Ticker(ticker_symbol)
-
-        # try fast_info first
+def get_live_prices():
+    user_id = session['user_id']
+    stocks = Portfolio.query.filter_by(user_id=user_id).all()
+    data = []
+    total_portfolio_value = 0
+    
+    for stock in stocks:
+        symbol = stock.symbol
+        if not symbol.upper().endswith('.NS'):
+            ticker_symbol = symbol + ".NS"
+        else:
+            ticker_symbol = symbol
+        
         try:
-            fast_info = ticker.fast_info
-            if fast_info:
-                price = fast_info.get("lastPrice") or fast_info.get("regularMarketPrice")
-                if price is not None:
-                    return float(price)
-        except:
-            pass
+            yf_data = yf.Ticker(ticker_symbol)
+            price = yf_data.info.get("regularMarketPrice")
+            if price is None: price = 0
+        except Exception:
+            price = 0
+            
+        total = round(price * stock.shares, 2)
+        total_portfolio_value += total
+        data.append({
+            'id': stock.id,
+            'price': price,
+            'total': total,
+        })
+        
+    return jsonify({
+        'stocks': data,
+        'total_portfolio_value': total_portfolio_value
+    })
 
-        # safer fallback
-        history = ticker.history(period="1d")
-
-        if history is None or history.empty:
-            history = ticker.history(period="5d")
-
-        if not history.empty:
-            return float(history["Close"].iloc[-1])
-
-    except:
-        pass
-
-    return 0.0
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':

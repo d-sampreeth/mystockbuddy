@@ -1,8 +1,7 @@
 Flask
 Flask-SQLAlchemy
+yfinance
 pandas
 numpy
 scikit-learn
-yfinance==0.2.40
 gunicorn
-psycopg2-binary
