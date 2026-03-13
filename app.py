@@ -5,14 +5,100 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
-# A simple decorator to protect routes
 from functools import wraps
 
+
+def get_ticker_symbol(symbol):
+    clean_symbol = (symbol or "").strip().upper()
+    if clean_symbol.endswith('.NS'):
+        return clean_symbol
+    return f"{clean_symbol}.NS"
+
+
+def get_stock_metadata(symbol):
+    ticker_symbol = get_ticker_symbol(symbol)
+    ticker = yf.Ticker(ticker_symbol)
+
+    info = {}
+    try:
+        info = ticker.info or {}
+    except Exception:
+        info = {}
+
+    price = info.get("regularMarketPrice")
+    display_name = info.get("longName") or info.get("shortName") or symbol.strip().upper()
+    website = info.get("website") or ""
+    has_market_data = price is not None
+
+    if not has_market_data:
+        try:
+            history = ticker.history(period="5d", interval="1d", auto_adjust=False)
+        except Exception:
+            history = pd.DataFrame()
+        has_market_data = history is not None and not history.empty
+        if has_market_data and (not price or pd.isna(price)) and "Close" in history.columns:
+            close = pd.to_numeric(history["Close"], errors="coerce").dropna()
+            if not close.empty:
+                price = float(close.iloc[-1])
+
+    is_valid = has_market_data or bool(info.get("symbol")) or bool(info.get("longName")) or bool(info.get("shortName"))
+
+    return {
+        "symbol": ticker_symbol.replace(".NS", ""),
+        "ticker_symbol": ticker_symbol,
+        "display_name": display_name,
+        "website": website,
+        "price": float(price) if price not in (None, "") and not pd.isna(price) else 0.0,
+        "valid": is_valid,
+    }
+
+
+def search_symbols(query, max_results=8):
+    query = (query or "").strip().upper()
+    if not query:
+        return []
+
+    try:
+        results = yf.Search(query, max_results=max_results, enable_fuzzy_query=True).quotes
+    except Exception:
+        return []
+
+    preferred_quotes = []
+    fallback_quotes = []
+    for quote in results or []:
+        quote_symbol = (quote.get("symbol") or "").upper()
+        exchange = (quote.get("exchange") or "").upper()
+        exchange_display = (quote.get("exchangeDisplay") or "").upper()
+        name = quote.get("longname") or quote.get("shortname") or quote_symbol
+        item = {
+            "symbol": quote_symbol.replace(".NS", ""),
+            "name": name,
+        }
+
+        if quote_symbol.endswith(".NS") or "NSE" in exchange or "NATIONAL STOCK EXCHANGE" in exchange_display:
+            preferred_quotes.append(item)
+        elif quote_symbol:
+            fallback_quotes.append(item)
+
+    matches = preferred_quotes or fallback_quotes
+    deduped_matches = []
+    seen_symbols = set()
+    for match in matches:
+        if match["symbol"] in seen_symbols:
+            continue
+        deduped_matches.append(match)
+        seen_symbols.add(match["symbol"])
+    return deduped_matches
+
+
+def suggest_symbol(symbol):
+    matches = search_symbols(symbol, max_results=8)
+    if not matches:
+        return None
+    return matches[0]
+
 def predict_stock(symbol):
-    if not symbol.upper().endswith('.NS'):
-        ticker_symbol = symbol + ".NS"
-    else:
-        ticker_symbol = symbol
+    ticker_symbol = get_ticker_symbol(symbol)
 
     try:
         data = yf.download(
@@ -73,7 +159,6 @@ app.secret_key = 'your_secret_key_here'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
 db = SQLAlchemy(app)
 
-# --- Login Required Decorator ---
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -106,17 +191,15 @@ def home():
     weighted_risk_sum = 0.0
     weighted_risk_total = 0.0
     for stock in stocks:
-        symbol = stock.symbol
-        if not symbol.upper().endswith('.NS'):
-            ticker_symbol = symbol + ".NS"
-        else:
-            ticker_symbol = symbol
-        
         try:
-            yf_data = yf.Ticker(ticker_symbol)
-            price = yf_data.info.get("regularMarketPrice", 0)
-            if price is None: price = 0
+            stock_meta = get_stock_metadata(stock.symbol)
+            price = stock_meta["price"]
         except Exception:
+            stock_meta = {
+                "symbol": stock.symbol.upper(),
+                "display_name": stock.symbol.upper(),
+                "website": "",
+            }
             price = 0
         prediction, risk = predict_stock(stock.symbol)
         total = round(price * stock.shares, 2)
@@ -124,7 +207,17 @@ def home():
         if risk in risk_score_map and total > 0:
             weighted_risk_sum += risk_score_map[risk] * total
             weighted_risk_total += total
-        data.append((stock.id, stock.symbol.upper(), stock.shares, price, total, prediction, risk))
+        data.append({
+            "id": stock.id,
+            "symbol": stock_meta["symbol"],
+            "display_name": stock_meta["display_name"],
+            "website": stock_meta["website"],
+            "shares": stock.shares,
+            "price": price,
+            "total": total,
+            "prediction": prediction,
+            "risk": risk,
+        })
 
     if weighted_risk_total > 0:
         avg_risk_score = weighted_risk_sum / weighted_risk_total
@@ -155,16 +248,8 @@ def get_live_prices():
     total_portfolio_value = 0
     
     for stock in stocks:
-        symbol = stock.symbol
-        if not symbol.upper().endswith('.NS'):
-            ticker_symbol = symbol + ".NS"
-        else:
-            ticker_symbol = symbol
-        
         try:
-            yf_data = yf.Ticker(ticker_symbol)
-            price = yf_data.info.get("regularMarketPrice")
-            if price is None: price = 0
+            price = get_stock_metadata(stock.symbol)["price"]
         except Exception:
             price = 0
             
@@ -180,6 +265,15 @@ def get_live_prices():
         'stocks': data,
         'total_portfolio_value': total_portfolio_value
     })
+
+
+@app.route('/search_symbols')
+@login_required
+def search_symbols_route():
+    query = request.args.get('q', '').strip()
+    if len(query) < 2:
+        return jsonify({'matches': []})
+    return jsonify({'matches': search_symbols(query, max_results=6)})
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -214,9 +308,7 @@ def logout():
 @app.route('/add', methods=['POST'])
 @login_required
 def add():
-    symbol = request.form['symbol']
-    if symbol.upper().endswith('.NS'):
-        symbol = symbol[:-3]
+    selected_symbol = request.form.get('selected_symbol', '').strip().upper()
 
     try:
         shares = int(request.form['shares'])
@@ -226,9 +318,30 @@ def add():
         flash("Please enter a valid positive number of shares.", "danger")
         return redirect(url_for('home'))
 
-    portfolio = Portfolio(user_id=session['user_id'], symbol=symbol, shares=shares)
+    if not selected_symbol:
+        flash("Please choose a stock from the suggestions before adding it.", "danger")
+        return redirect(url_for('home'))
+
+    try:
+        stock_meta = get_stock_metadata(selected_symbol)
+    except Exception:
+        stock_meta = {"valid": False}
+
+    if not stock_meta.get("valid"):
+        suggestion = suggest_symbol(selected_symbol)
+        if suggestion:
+            flash(
+                f"'{selected_symbol}' was not found. Did you mean {suggestion['symbol']} ({suggestion['name']})?",
+                "danger"
+            )
+        else:
+            flash(f"'{selected_symbol}' is not a valid stock symbol. Please check and try again.", "danger")
+        return redirect(url_for('home'))
+
+    portfolio = Portfolio(user_id=session['user_id'], symbol=stock_meta["symbol"], shares=shares)
     db.session.add(portfolio)
     db.session.commit()
+    flash(f"Added {stock_meta['display_name']} ({stock_meta['symbol']}).", "success")
     return redirect(url_for('home'))
 
 @app.route('/delete/<int:stock_id>', methods=['POST'])
